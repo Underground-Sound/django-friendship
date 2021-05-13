@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
 from friendship.exceptions import AlreadyExistsError, AlreadyFriendsError
 from friendship.signals import (
@@ -135,7 +135,6 @@ class FriendshipRequest(models.Model):
         # Bust friends cache - new friends added
         bust_cache("friends", self.to_user.pk)
         bust_cache("friends", self.from_user.pk)
-
         return True
 
     def reject(self):
@@ -144,6 +143,7 @@ class FriendshipRequest(models.Model):
         self.save()
         friendship_request_rejected.send(sender=self)
         bust_cache("requests", self.to_user.pk)
+        return True
 
     def cancel(self):
         """ cancel this friendship request """
@@ -314,8 +314,11 @@ class FriendshipManager(models.Manager):
         if self.are_friends(from_user, to_user):
             raise AlreadyFriendsError("Users are already friends")
 
-        if self.can_request_send(from_user, to_user):
-            raise AlreadyExistsError("Friendship already requested")
+        if (FriendshipRequest.objects.filter(from_user=from_user, to_user=to_user).exists()):
+            raise AlreadyExistsError("You already requested friendship from this user.")
+
+        if (FriendshipRequest.objects.filter(from_user=to_user, to_user=from_user).exists()):
+            raise AlreadyExistsError("This user already requested friendship from you.")
 
         if message is None:
             message = ""
@@ -337,33 +340,15 @@ class FriendshipManager(models.Manager):
 
         return request
 
-    def can_request_send(self, from_user, to_user):
-        """ Checks if a request was sent """
-        if from_user == to_user:
-            return False
-
-        if not FriendshipRequest.objects.filter(
-            from_user=from_user, to_user=to_user
-        ).exists():
-            return False
-
-        return True
-
     def remove_friend(self, from_user, to_user):
         """ Destroy a friendship relationship """
         try:
-            qs = (
-                Friend.objects.filter(
-                    Q(to_user=to_user, from_user=from_user)
-                    | Q(to_user=from_user, from_user=to_user)
-                )
-                .distinct()
-                .all()
-            )
+            qs = Friend.objects.filter(Q(to_user=to_user, from_user=from_user) | Q(to_user=from_user, from_user=to_user))
+            distinct_qs = qs.distinct().all()
 
-            if qs:
+            if distinct_qs:
                 friendship_removed.send(
-                    sender=qs[0], from_user=from_user, to_user=to_user
+                    sender=distinct_qs[0], from_user=from_user, to_user=to_user
                 )
                 qs.delete()
                 bust_cache("friends", to_user.pk)
@@ -582,7 +567,7 @@ class BlockManager(models.Manager):
             bust_cache("blocked", blocked.pk)
             bust_cache("blocking", blocker.pk)
             return True
-        except Follow.DoesNotExist:
+        except Block.DoesNotExist:
             return False
 
     def is_blocked(self, user1, user2):
